@@ -9,7 +9,7 @@ export default async function handler(req, res) {
   if (!GROQ_API_KEY) return res.status(500).json({ error: 'GROQ_API_KEY not configured' });
 
   // Always use the most reliable free model
-  const SAFE_MODEL = 'gemma2-9b-it';
+  const SAFE_MODEL = 'llama-3.3-70b-versatile';
 
   const { systemPrompt, userInput, expected, aiResponse, mode, failedCases } = req.body;
 
@@ -23,7 +23,7 @@ export default async function handler(req, res) {
       const text = await groq(GROQ_API_KEY, SAFE_MODEL, [
         { role: 'system', content: systemPrompt },
         { role: 'user',   content: userInput }
-      ], 300, 0.3);
+      ], 400, 0.3);
       return res.status(200).json({ aiResponse: text });
     }
 
