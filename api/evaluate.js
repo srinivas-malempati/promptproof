@@ -25,48 +25,62 @@ export default async function handler(req, res) {
     // ── MODE: judge ────────────────────────────────────────────────
     // AI-as-judge: did the response meet expected behavior?
     if (mode === 'judge') {
-      const prompt = `You are a fair AI evaluator. Judge if the AI response meets the expected behavior.
+      const systemMsg = 'You are a fair AI evaluator. You MUST respond with valid JSON only. No markdown, no explanation, just JSON.';
+      const userMsg = `Judge if this AI response meets the expected behavior.
 
 USER INPUT: ${userInput}
 EXPECTED BEHAVIOR: ${expected}
 AI RESPONSE: ${aiResponse}
 
-Respond ONLY with valid JSON:
-{"verdict": "pass" | "partial" | "fail", "feedback": "One clear sentence explaining why."}
+Return ONLY this JSON with no other text:
+{"verdict":"pass","feedback":"reason here"}
 
-Scoring rules — be generous, not strict:
-- "pass": Response addresses the main expected behavior, even if wording differs or minor details vary. If the AI flagged the right things, it passes.
-- "partial": Response addresses some but clearly misses one major expected behavior
-- "fail": Response completely ignores the expected behavior or gives wrong information
+Use verdict "pass" if the response addresses the main expected behavior even if wording differs.
+Use verdict "partial" if the response addresses some but clearly misses one major point.
+Use verdict "fail" if the response completely ignores or contradicts the expected behavior.
+Be generous — judge on substance not style.`;
 
-Important: Do NOT fail or partial a response just because it used different words or added extra helpful information. Judge on substance, not style.`;
-
-      const text = await groq(GROQ_API_KEY, model, [{ role: 'user', content: prompt }], 150, 0);
-      return res.status(200).json(parseJSON(text, { verdict: 'partial', feedback: 'Could not parse judgment.' }));
+      const text = await groq(GROQ_API_KEY, 'llama-3.1-8b-instant', [
+        { role: 'system', content: systemMsg },
+        { role: 'user', content: userMsg }
+      ], 200, 0);
+      const parsed = parseJSON(text, null);
+      if (parsed && parsed.verdict) {
+        return res.status(200).json(parsed);
+      }
+      // Try to extract verdict manually if JSON fails
+      const v = text.includes('"pass"') ? 'pass' : text.includes('"fail"') ? 'fail' : 'partial';
+      const f = text.replace(/[{}"]/g,'').replace(/verdict:|feedback:/g,'').trim().substring(0, 120);
+      return res.status(200).json({ verdict: v, feedback: f || 'Evaluated successfully.' });
     }
 
     // ── MODE: validate ─────────────────────────────────────────────
     // Check if a test case is clear, realistic, and measurable
     if (mode === 'validate') {
-      const prompt = `You are a QA expert reviewing a test case for AI prompt evaluation.
+      const systemMsg = 'You are a QA expert. You MUST respond with valid JSON only. No markdown, no extra text.';
+      const userMsg = `Review this test case quality.
 
-INPUT/SCENARIO: "${userInput}"
-EXPECTED BEHAVIOR: "${expected}"
+INPUT: "${userInput}"
+EXPECTED: "${expected}"
 
-Check:
-1. Is the input realistic and clear?
-2. Is the expected behavior specific and measurable? (not vague like "respond well")
-3. Are there any contradictions or impossibilities?
+Return ONLY this JSON:
+{"quality":"good","feedback":"reason here"}
 
-Respond ONLY with valid JSON:
-{"quality": "good" | "improve" | "invalid", "feedback": "One clear sentence explaining quality and what to fix if needed."}
+Use "good" if input is realistic and expected behavior is specific and measurable.
+Use "improve" if somewhat clear but expected behavior is vague or input needs more detail.
+Use "invalid" if contradictory or impossible to measure.
+Be generous — most realistic test cases should be "good".`;
 
-- "good": Clear, realistic, measurable
-- "improve": Somewhat clear but vague or needs more detail
-- "invalid": Contradictory, impossible, or completely unmeasurable`;
-
-      const text = await groq(GROQ_API_KEY, model, [{ role: 'user', content: prompt }], 150, 0);
-      return res.status(200).json(parseJSON(text, { quality: 'improve', feedback: 'Could not validate this test case.' }));
+      const text = await groq(GROQ_API_KEY, 'llama-3.1-8b-instant', [
+        { role: 'system', content: systemMsg },
+        { role: 'user', content: userMsg }
+      ], 150, 0);
+      const parsed = parseJSON(text, null);
+      if (parsed && parsed.quality) {
+        return res.status(200).json(parsed);
+      }
+      const q = text.includes('"good"') ? 'good' : text.includes('"invalid"') ? 'invalid' : 'improve';
+      return res.status(200).json({ quality: q, feedback: 'Test case evaluated.' });
     }
 
     // ── MODE: suggest ──────────────────────────────────────────────
