@@ -25,7 +25,7 @@ export default async function handler(req, res) {
     // ── MODE: judge ────────────────────────────────────────────────
     // AI-as-judge: did the response meet expected behavior?
     if (mode === 'judge') {
-      const prompt = `You are an AI evaluator. Judge if the AI response meets the expected behavior.
+      const prompt = `You are a fair AI evaluator. Judge if the AI response meets the expected behavior.
 
 USER INPUT: ${userInput}
 EXPECTED BEHAVIOR: ${expected}
@@ -34,9 +34,12 @@ AI RESPONSE: ${aiResponse}
 Respond ONLY with valid JSON:
 {"verdict": "pass" | "partial" | "fail", "feedback": "One clear sentence explaining why."}
 
-- "pass": Response clearly meets the expected behavior
-- "partial": Partially meets it but misses something important
-- "fail": Does not meet the expected behavior`;
+Scoring rules — be generous, not strict:
+- "pass": Response addresses the main expected behavior, even if wording differs or minor details vary. If the AI flagged the right things, it passes.
+- "partial": Response addresses some but clearly misses one major expected behavior
+- "fail": Response completely ignores the expected behavior or gives wrong information
+
+Important: Do NOT fail or partial a response just because it used different words or added extra helpful information. Judge on substance, not style.`;
 
       const text = await groq(GROQ_API_KEY, model, [{ role: 'user', content: prompt }], 150, 0);
       return res.status(200).json(parseJSON(text, { verdict: 'partial', feedback: 'Could not parse judgment.' }));
