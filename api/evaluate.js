@@ -35,15 +35,17 @@ export default async function handler(req, res) {
       const text = await groq(GROQ_API_KEY, SAFE_MODEL, [
         { role: 'system', content: 'You are a fair evaluator. Respond with JSON only. No markdown.' },
         { role: 'user', content: 
-          'Does this AI response meet the expected behavior?\n\n' +
+          'Judge if this AI response meets the expected behavior. Be GENEROUS.\n\n' +
           'INPUT: ' + userInput + '\n' +
           'EXPECTED: ' + expected + '\n' +
           'AI RESPONSE: ' + aiResponse + '\n\n' +
-          'Reply with JSON: {"verdict":"pass","feedback":"reason"}\n' +
-          'Use pass if response addresses the main expected behavior.\n' +
-          'Use partial if it misses something important.\n' +
-          'Use fail only if completely wrong or ignores the question.\n' +
-          'Be generous - judge on substance not exact wording.'
+          'Rules:\n' +
+          '- Use PASS if the AI identified the right issues, even with different wording\n' +
+          '- Use PASS if the AI flagged the right fees/charges even if it missed minor details\n' +
+          '- Use PARTIAL only if AI clearly missed one major requirement\n' +
+          '- Use FAIL only if AI gave completely wrong information or ignored the input entirely\n' +
+          '- NEVER fail just because AI added extra helpful information\n\n' +
+          'Reply ONLY with JSON: {"verdict":"pass","feedback":"one sentence reason"}'
         }
       ], 200, 0);
 
@@ -95,22 +97,27 @@ export default async function handler(req, res) {
 
     // ── MODE: suggest ──────────────────────────────────────────
     if (mode === 'suggest') {
-      if (!systemPrompt || !failedCases) {
-        return res.status(400).json({ error: 'systemPrompt and failedCases required' });
+      if (!systemPrompt) {
+        return res.status(400).json({ error: 'systemPrompt required for suggest' });
       }
-      const summary = failedCases.slice(0, 4).map((r, i) =>
-        (i+1) + '. Input: ' + r.input.substring(0,100) + ' | Expected: ' + r.expected.substring(0,100)
+
+      // Handle failedCases safely
+      const cases = Array.isArray(failedCases) ? failedCases : [];
+      const summary = cases.slice(0, 3).map((r, i) =>
+        (i+1) + '. ' + String(r.input || '').substring(0, 80)
       ).join('\n');
 
+      const originalPrompt = String(systemPrompt).substring(0, 500);
+
       const text = await groq(GROQ_API_KEY, SAFE_MODEL, [
-        { role: 'system', content: 'You are a prompt engineer. Return only the improved prompt text, nothing else.' },
+        { role: 'system', content: 'You are a prompt engineer. Return only improved prompt text. No explanation.' },
         { role: 'user', content:
-          'This system prompt is failing. Rewrite it to fix these failures.\n\n' +
-          'ORIGINAL PROMPT:\n' + systemPrompt.substring(0, 600) + '\n\n' +
-          'FAILED CASES:\n' + summary + '\n\n' +
+          'Rewrite this prompt to be more specific and handle edge cases better.\n\n' +
+          'ORIGINAL:\n' + originalPrompt + '\n\n' +
+          (summary ? 'IT FAILED ON:\n' + summary + '\n\n' : '') +
           'Return ONLY the improved prompt text.'
         }
-      ], 600, 0.4);
+      ], 500, 0.4);
       return res.status(200).json({ aiResponse: text });
     }
 
