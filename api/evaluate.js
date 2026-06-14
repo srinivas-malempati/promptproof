@@ -9,7 +9,7 @@ export default async function handler(req, res) {
   if (!GROQ_API_KEY) return res.status(500).json({ error: 'GROQ_API_KEY not configured' });
 
   // Always use the most reliable free model
-  const SAFE_MODEL = 'mixtral-8x7b-32768';
+  const SAFE_MODEL = 'gemma2-9b-it';
 
   const { systemPrompt, userInput, expected, aiResponse, mode, failedCases } = req.body;
 
