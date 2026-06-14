@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/evaluate.js": {
+      "memory": 512,
+      "maxDuration": 30
+    }
+  }
+}
