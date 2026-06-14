@@ -5,148 +5,138 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { model, systemPrompt, userInput, expected, aiResponse, mode } = req.body;
   const GROQ_API_KEY = process.env.GROQ_API_KEY;
-
   if (!GROQ_API_KEY) return res.status(500).json({ error: 'GROQ_API_KEY not configured' });
+
+  // Always use the most reliable free model
+  const SAFE_MODEL = 'llama-3.1-8b-instant';
+
+  const { systemPrompt, userInput, expected, aiResponse, mode, failedCases } = req.body;
 
   try {
 
-    // ── MODE: respond ──────────────────────────────────────────────
-    // Run user input through the system prompt and get AI response
+    // ── MODE: respond ──────────────────────────────────────────
     if (mode === 'respond') {
-      const response = await groq(GROQ_API_KEY, model, [
+      if (!systemPrompt || !userInput) {
+        return res.status(400).json({ error: 'systemPrompt and userInput required' });
+      }
+      const text = await groq(GROQ_API_KEY, SAFE_MODEL, [
         { role: 'system', content: systemPrompt },
         { role: 'user',   content: userInput }
-      ], 500, 0.3);
-      return res.status(200).json({ aiResponse: response });
+      ], 600, 0.3);
+      return res.status(200).json({ aiResponse: text });
     }
 
-    // ── MODE: judge ────────────────────────────────────────────────
-    // AI-as-judge: did the response meet expected behavior?
+    // ── MODE: judge ────────────────────────────────────────────
     if (mode === 'judge') {
-      const systemMsg = 'You are a fair AI evaluator. You MUST respond with valid JSON only. No markdown, no explanation, just JSON.';
-      const userMsg = `Judge if this AI response meets the expected behavior.
-
-USER INPUT: ${userInput}
-EXPECTED BEHAVIOR: ${expected}
-AI RESPONSE: ${aiResponse}
-
-Return ONLY this JSON with no other text:
-{"verdict":"pass","feedback":"reason here"}
-
-Use verdict "pass" if the response addresses the main expected behavior even if wording differs.
-Use verdict "partial" if the response addresses some but clearly misses one major point.
-Use verdict "fail" if the response completely ignores or contradicts the expected behavior.
-Be generous — judge on substance not style.`;
-
-      const text = await groq(GROQ_API_KEY, 'llama-3.1-8b-instant', [
-        { role: 'system', content: systemMsg },
-        { role: 'user', content: userMsg }
+      if (!userInput || !expected || !aiResponse) {
+        return res.status(400).json({ error: 'userInput, expected, aiResponse required' });
+      }
+      const text = await groq(GROQ_API_KEY, SAFE_MODEL, [
+        { role: 'system', content: 'You are a fair evaluator. Respond with JSON only. No markdown.' },
+        { role: 'user', content: 
+          'Does this AI response meet the expected behavior?\n\n' +
+          'INPUT: ' + userInput + '\n' +
+          'EXPECTED: ' + expected + '\n' +
+          'AI RESPONSE: ' + aiResponse + '\n\n' +
+          'Reply with JSON: {"verdict":"pass","feedback":"reason"}\n' +
+          'Use pass if response addresses the main expected behavior.\n' +
+          'Use partial if it misses something important.\n' +
+          'Use fail only if completely wrong or ignores the question.\n' +
+          'Be generous - judge on substance not exact wording.'
+        }
       ], 200, 0);
-      const parsed = parseJSON(text, null);
-      if (parsed && parsed.verdict) {
-        return res.status(200).json(parsed);
+
+      const clean = text.replace(/```json|```/g, '').trim();
+      let result;
+      try {
+        result = JSON.parse(clean);
+      } catch {
+        // Manual extraction fallback
+        const v = clean.includes('"pass"') ? 'pass' : clean.includes('"fail"') ? 'fail' : 'partial';
+        const fMatch = clean.match(/"feedback"\s*:\s*"([^"]+)"/);
+        result = { verdict: v, feedback: fMatch ? fMatch[1] : 'Evaluated.' };
       }
-      // Try to extract verdict manually if JSON fails
-      const v = text.includes('"pass"') ? 'pass' : text.includes('"fail"') ? 'fail' : 'partial';
-      const f = text.replace(/[{}"]/g,'').replace(/verdict:|feedback:/g,'').trim().substring(0, 120);
-      return res.status(200).json({ verdict: v, feedback: f || 'Evaluated successfully.' });
+      if (!['pass','partial','fail'].includes(result.verdict)) result.verdict = 'partial';
+      return res.status(200).json(result);
     }
 
-    // ── MODE: validate ─────────────────────────────────────────────
-    // Check if a test case is clear, realistic, and measurable
+    // ── MODE: validate ─────────────────────────────────────────
     if (mode === 'validate') {
-      const systemMsg = 'You are a QA expert. You MUST respond with valid JSON only. No markdown, no extra text.';
-      const userMsg = `Review this test case quality.
-
-INPUT: "${userInput}"
-EXPECTED: "${expected}"
-
-Return ONLY this JSON:
-{"quality":"good","feedback":"reason here"}
-
-Use "good" if input is realistic and expected behavior is specific and measurable.
-Use "improve" if somewhat clear but expected behavior is vague or input needs more detail.
-Use "invalid" if contradictory or impossible to measure.
-Be generous — most realistic test cases should be "good".`;
-
-      const text = await groq(GROQ_API_KEY, 'llama-3.1-8b-instant', [
-        { role: 'system', content: systemMsg },
-        { role: 'user', content: userMsg }
-      ], 150, 0);
-      const parsed = parseJSON(text, null);
-      if (parsed && parsed.quality) {
-        return res.status(200).json(parsed);
+      if (!userInput || !expected) {
+        return res.status(400).json({ error: 'userInput and expected required' });
       }
-      const q = text.includes('"good"') ? 'good' : text.includes('"invalid"') ? 'invalid' : 'improve';
-      return res.status(200).json({ quality: q, feedback: 'Test case evaluated.' });
+      const text = await groq(GROQ_API_KEY, SAFE_MODEL, [
+        { role: 'system', content: 'You are a QA expert. Respond with JSON only. No markdown.' },
+        { role: 'user', content:
+          'Rate this test case quality.\n\n' +
+          'INPUT: ' + userInput + '\n' +
+          'EXPECTED: ' + expected + '\n\n' +
+          'Reply with JSON: {"quality":"good","feedback":"reason"}\n' +
+          'Use good if input is realistic and expected behavior is specific.\n' +
+          'Use improve if vague or needs more detail.\n' +
+          'Use invalid if contradictory or impossible.\n' +
+          'Most realistic test cases should be good.'
+        }
+      ], 150, 0);
+
+      const clean = text.replace(/```json|```/g, '').trim();
+      let result;
+      try {
+        result = JSON.parse(clean);
+      } catch {
+        const q = clean.includes('"good"') ? 'good' : clean.includes('"invalid"') ? 'invalid' : 'improve';
+        const fMatch = clean.match(/"feedback"\s*:\s*"([^"]+)"/);
+        result = { quality: q, feedback: fMatch ? fMatch[1] : 'Test case evaluated.' };
+      }
+      if (!['good','improve','invalid'].includes(result.quality)) result.quality = 'improve';
+      return res.status(200).json(result);
     }
 
-    // ── MODE: suggest ──────────────────────────────────────────────
-    // Rewrite the prompt based on failed test cases
+    // ── MODE: suggest ──────────────────────────────────────────
     if (mode === 'suggest') {
-      const { failedCases } = req.body;
-      const failureSummary = failedCases.map((r, i) =>
-        `Case ${i + 1}:\n  Input: "${r.input}"\n  Expected: "${r.expected}"\n  Feedback: "${r.feedback}"`
-      ).join('\n\n');
+      if (!systemPrompt || !failedCases) {
+        return res.status(400).json({ error: 'systemPrompt and failedCases required' });
+      }
+      const summary = failedCases.slice(0, 4).map((r, i) =>
+        (i+1) + '. Input: ' + r.input.substring(0,100) + ' | Expected: ' + r.expected.substring(0,100)
+      ).join('\n');
 
-      const prompt = `You are an expert prompt engineer. A system prompt failed more than 50% of its test cases.
-
-ORIGINAL SYSTEM PROMPT:
-${systemPrompt}
-
-FAILED TEST CASES:
-${failureSummary}
-
-Rewrite the system prompt to fix these failures while keeping the original intent.
-Rules:
-- Keep the same purpose and tone
-- Add specific instructions to handle the failed scenarios
-- Be explicit about edge cases
-- Do NOT add unnecessary complexity
-- Return ONLY the improved prompt text, no explanation or preamble`;
-
-      const improved = await groq(GROQ_API_KEY, model, [
-        { role: 'system', content: 'You are an expert prompt engineer. Return only the improved prompt text.' },
-        { role: 'user',   content: prompt }
-      ], 800, 0.4);
-
-      return res.status(200).json({ aiResponse: improved });
+      const text = await groq(GROQ_API_KEY, SAFE_MODEL, [
+        { role: 'system', content: 'You are a prompt engineer. Return only the improved prompt text, nothing else.' },
+        { role: 'user', content:
+          'This system prompt is failing. Rewrite it to fix these failures.\n\n' +
+          'ORIGINAL PROMPT:\n' + systemPrompt.substring(0, 600) + '\n\n' +
+          'FAILED CASES:\n' + summary + '\n\n' +
+          'Return ONLY the improved prompt text.'
+        }
+      ], 600, 0.4);
+      return res.status(200).json({ aiResponse: text });
     }
 
-    return res.status(400).json({ error: 'Invalid mode. Use: respond | judge | validate | suggest' });
+    return res.status(400).json({ error: 'Invalid mode: ' + mode });
 
   } catch (err) {
+    console.error('PromptProof error:', err.message);
     return res.status(500).json({ error: err.message });
   }
 }
 
-// ── Helpers ────────────────────────────────────────────────────────
-async function groq(apiKey, model, messages, maxTokens = 500, temperature = 0.3) {
+async function groq(apiKey, model, messages, maxTokens, temperature) {
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
+      'Authorization': 'Bearer ' + apiKey
     },
     body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature })
   });
 
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Groq API error ${res.status}: ${err}`);
+    const errText = await res.text();
+    throw new Error('Groq ' + res.status + ': ' + errText.substring(0, 200));
   }
 
   const data = await res.json();
   return data.choices[0].message.content.trim();
-}
-
-function parseJSON(text, fallback) {
-  try {
-    const clean = text.replace(/```json|```/g, '').trim();
-    return JSON.parse(clean);
-  } catch {
-    return fallback;
-  }
 }
